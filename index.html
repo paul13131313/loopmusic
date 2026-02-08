@@ -57,20 +57,23 @@
   }
 
   .btn {
-    width: 40px;
-    height: 40px;
+    width: 36px;
+    height: 36px;
     border-radius: 50%;
     border: 1px solid #333;
-    background: rgba(20,20,20,0.8);
-    color: #666;
-    font-size: 16px;
+    background: rgba(10,10,10,0.6);
+    color: #444;
+    font-size: 14px;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
-    transition: all 0.2s;
+    transition: all 0.3s;
   }
 
-  .btn:active { transform: scale(0.9); }
-  .btn.on { border-color: #ff4444; color: #ff4444; }
+  .btn:active { 
+    transform: scale(0.9); 
+    border-color: #ff4444;
+    color: #ff4444;
+  }
 
   /* Start overlay */
   #start {
@@ -141,7 +144,6 @@
 
 <div id="controls">
   <button class="btn" id="btn-clear">×</button>
-  <button class="btn" id="btn-drone">◯</button>
 </div>
 
 <div id="start">
@@ -150,7 +152,7 @@
   <button id="start-btn">▶</button>
 </div>
 
-<div id="hint">触れると音 — 長押しで持続</div>
+<div id="hint">どこでも触れて音を重ねる</div>
 
 <script>
 const canvas = document.getElementById('canvas');
@@ -193,6 +195,10 @@ function initAudio() {
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   isPlaying = true;
   loopStart = audioCtx.currentTime;
+  
+  // ドローンを自動開始
+  startDrone();
+  
   animate();
   setTimeout(() => hint.style.opacity = '0', 3000);
 }
@@ -204,18 +210,6 @@ document.getElementById('start-btn').addEventListener('click', () => {
 
 document.getElementById('btn-clear').addEventListener('click', () => {
   notes = [];
-});
-
-document.getElementById('btn-drone').addEventListener('click', function() {
-  if (!audioCtx) return;
-  droneOn = !droneOn;
-  this.classList.toggle('on', droneOn);
-  
-  if (droneOn) {
-    startDrone();
-  } else {
-    stopDrone();
-  }
 });
 
 // Drone - continuous ambient pad
