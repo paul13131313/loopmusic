@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Loop</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    background: #0a0a0a;
+    overflow: hidden;
+    touch-action: none;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+    height: 100%;
+    width: 100%;
+    position: fixed;
+  }
+
+  #canvas {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* Loop progress ring */
+  #ring {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 60px;
+    height: 60px;
+    pointer-events: none;
+    opacity: 0.3;
+  }
+
+  #ring circle {
+    fill: none;
+    stroke-width: 3;
+  }
+
+  #ring .bg { stroke: #222; }
+  #ring .progress { stroke: #ff4444; stroke-linecap: round; transform: rotate(-90deg); transform-origin: center; }
+
+  /* Minimal controls */
+  #controls {
+    position: fixed;
+    bottom: 24px;
+    right: 20px;
+    display: flex;
+    gap: 10px;
+  }
+
+  .btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 1px solid #333;
+    background: rgba(20,20,20,0.8);
+    color: #666;
+    font-size: 16px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: all 0.2s;
+  }
+
+  .btn:active { transform: scale(0.9); }
+  .btn.on { border-color: #ff4444; color: #ff4444; }
+
+  /* Start overlay */
+  #start {
+    position: fixed;
+    inset: 0;
+    background: #0a0a0a;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    transition: opacity 0.5s;
+  }
+
+  #start.hidden { opacity: 0; pointer-events: none; }
+
+  #start h1 {
+    font-family: system-ui;
+    font-weight: 200;
+    color: #fff;
+    font-size: 28px;
+    letter-spacing: 0.3em;
+    margin-bottom: 16px;
+  }
+
+  #start p {
+    color: #555;
+    font-family: system-ui;
+    font-size: 13px;
+    margin-bottom: 40px;
+  }
+
+  #start button {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    border: 2px solid #ff4444;
+    background: transparent;
+    color: #ff4444;
+    font-size: 28px;
+    cursor: pointer;
+  }
+
+  #start button:active { background: #ff4444; color: #000; }
+
+  /* Hint */
+  #hint {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: #333;
+    font-family: system-ui;
+    font-size: 12px;
+    pointer-events: none;
+    transition: opacity 2s;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+
+<svg id="ring" viewBox="0 0 60 60">
+  <circle class="bg" cx="30" cy="30" r="26"/>
+  <circle class="progress" cx="30" cy="30" r="26" stroke-dasharray="163.36" stroke-dashoffset="163.36"/>
+</svg>
+
+<div id="controls">
+  <button class="btn" id="btn-clear">×</button>
+  <button class="btn" id="btn-drone">◯</button>
+</div>
+
+<div id="start">
+  <h1>LOOP</h1>
+  <p>画面をタップして演奏</p>
+  <button id="start-btn">▶</button>
+</div>
+
+<div id="hint">触れると音 — 長押しで持続</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const ring = document.querySelector('#ring .progress');
+const hint = document.getElementById('hint');
+
+let W, H;
+let audioCtx;
+let isPlaying = false;
+let loopStart = 0;
+let notes = [];
+let particles = [];
+let lastBeat = -1;
+let droneOn = false;
+let droneNodes = null;
+
+const BPM = 50;
+const BARS = 4;
+const BEATS = 4;
+const loopDur = () => (60 / BPM) * BEATS * BARS;
+
+// Pentatonic scale frequencies
+const scale = [130.81, 146.83, 164.81, 196.00, 220.00, 261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33];
+
+// Colors - soft muted pastels
+const colors = ['#aa7788', '#aa9977', '#99aa88', '#779988', '#7799aa', '#8877aa', '#aa7799'];
+
+function resize() {
+  W = canvas.width = window.innerWidth * 2;
+  H = canvas.height = window.innerHeight * 2;
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  ctx.scale(2, 2);
+}
+resize();
+window.addEventListener('resize', resize);
+
+function initAudio() {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  isPlaying = true;
+  loopStart = audioCtx.currentTime;
+  animate();
+  setTimeout(() => hint.style.opacity = '0', 3000);
+}
+
+document.getElementById('start-btn').addEventListener('click', () => {
+  initAudio();
+  document.getElementById('start').classList.add('hidden');
+});
+
+document.getElementById('btn-clear').addEventListener('click', () => {
+  notes = [];
+});
+
+document.getElementById('btn-drone').addEventListener('click', function() {
+  if (!audioCtx) return;
+  droneOn = !droneOn;
+  this.classList.toggle('on', droneOn);
+  
+  if (droneOn) {
+    startDrone();
+  } else {
+    stopDrone();
+  }
+});
+
+// Drone - continuous ambient pad
+function startDrone() {
+  const t = audioCtx.currentTime;
+  const baseFreq = 65.41; // C2
+  
+  // Multiple detuned oscillators for rich pad
+  const oscs = [];
+  const gains = [];
+  const freqs = [baseFreq, baseFreq * 1.5, baseFreq * 2, baseFreq * 3]; // root, fifth, octave, octave+fifth
+  const detunes = [-5, 0, 5];
+  
+  freqs.forEach((freq, fi) => {
+    detunes.forEach(d => {
+      const osc = audioCtx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      osc.detune.value = d + Math.random() * 4 - 2;
+      oscs.push(osc);
+    });
+  });
+  
+  // Slow LFO for movement
+  const lfo = audioCtx.createOscillator();
+  lfo.frequency.value = 0.1;
+  const lfoGain = audioCtx.createGain();
+  lfoGain.gain.value = 3;
+  lfo.connect(lfoGain);
+  
+  oscs.forEach(osc => {
+    lfoGain.connect(osc.detune);
+  });
+  
+  // Very soft filter
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 400;
+  filter.Q.value = 0.3;
+  
+  // Filter LFO
+  const filterLfo = audioCtx.createOscillator();
+  filterLfo.frequency.value = 0.05;
+  const filterLfoGain = audioCtx.createGain();
+  filterLfoGain.gain.value = 150;
+  filterLfo.connect(filterLfoGain);
+  filterLfoGain.connect(filter.frequency);
+  
+  // Master gain with fade in
+  const masterGain = audioCtx.createGain();
+  masterGain.gain.setValueAtTime(0, t);
+  masterGain.gain.linearRampToValueAtTime(0.08, t + 3);
+  
+  // Connect
+  oscs.forEach(osc => {
+    osc.connect(filter);
+  });
+  filter.connect(masterGain);
+  masterGain.connect(audioCtx.destination);
+  
+  // Start
+  lfo.start(t);
+  filterLfo.start(t);
+  oscs.forEach(osc => osc.start(t));
+  
+  droneNodes = { oscs, lfo, filterLfo, masterGain };
+}
+
+function stopDrone() {
+  if (!droneNodes) return;
+  const t = audioCtx.currentTime;
+  
+  // Fade out
+  droneNodes.masterGain.gain.linearRampToValueAtTime(0, t + 2);
+  
+  // Stop after fade
+  setTimeout(() => {
+    if (droneNodes) {
+      droneNodes.oscs.forEach(osc => { try { osc.stop(); } catch(e) {} });
+      try { droneNodes.lfo.stop(); } catch(e) {}
+      try { droneNodes.filterLfo.stop(); } catch(e) {}
+      droneNodes = null;
+    }
+  }, 2500);
+}
+
+// Get loop position (0-1)
+function getPos() {
+  if (!audioCtx) return 0;
+  return ((audioCtx.currentTime - loopStart) % loopDur()) / loopDur();
+}
+
+// Touch/click handler
+function handleInput(x, y, sustained = false) {
+  if (!audioCtx) return null;
+
+  const nx = x / (W/2);
+  const ny = y / (H/2);
+
+  // Map Y to scale index (top = high, bottom = low)
+  const scaleIndex = Math.floor((1 - ny) * scale.length);
+  const freq = scale[Math.max(0, Math.min(scale.length - 1, scaleIndex))];
+
+  // Map X to sound character
+  const brightness = nx;
+
+  // Color based on position
+  const colorIndex = Math.floor(ny * colors.length);
+  const color = colors[Math.max(0, Math.min(colors.length - 1, colorIndex))];
+
+  // Play sound
+  const noteData = playNote(freq, brightness, ny, sustained);
+
+  // Add particle
+  addParticle(x, y, color);
+
+  // Record (only non-sustained)
+  if (!sustained) {
+    notes.push({
+      pos: getPos(),
+      freq,
+      brightness,
+      ny,
+      x, y, color,
+      played: true
+    });
+  }
+  
+  return noteData;
+}
+
+// Active sustained notes (for touch hold)
+let activeTouches = new Map();
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  for (let t of e.touches) {
+    const id = t.identifier;
+    if (!activeTouches.has(id)) {
+      const noteData = handleInput(t.clientX, t.clientY, true);
+      activeTouches.set(id, noteData);
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  // Gentle pitch bend on move
+  for (let t of e.changedTouches) {
+    const id = t.identifier;
+    if (activeTouches.has(id)) {
+      const data = activeTouches.get(id);
+      if (data && data.osc) {
+        const ny = t.clientY / (H/2);
+        const scaleIndex = Math.floor((1 - ny) * scale.length);
+        const freq = scale[Math.max(0, Math.min(scale.length - 1, scaleIndex))];
+        data.osc.frequency.linearRampToValueAtTime(freq, audioCtx.currentTime + 0.1);
+      }
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  for (let t of e.changedTouches) {
+    const id = t.identifier;
+    if (activeTouches.has(id)) {
+      const data = activeTouches.get(id);
+      if (data && data.gain) {
+        data.gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 1.5);
+      }
+      activeTouches.delete(id);
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('mousedown', e => {
+  const noteData = handleInput(e.clientX, e.clientY, true);
+  activeTouches.set('mouse', noteData);
+});
+
+canvas.addEventListener('mousemove', e => {
+  if (activeTouches.has('mouse')) {
+    const data = activeTouches.get('mouse');
+    if (data && data.osc) {
+      const ny = e.clientY / (H/2);
+      const scaleIndex = Math.floor((1 - ny) * scale.length);
+      const freq = scale[Math.max(0, Math.min(scale.length - 1, scaleIndex))];
+      data.osc.frequency.linearRampToValueAtTime(freq, audioCtx.currentTime + 0.1);
+    }
+    // Visual
+    addParticle(e.clientX, e.clientY, colors[Math.floor(Math.random() * colors.length)]);
+  }
+});
+
+canvas.addEventListener('mouseup', e => {
+  if (activeTouches.has('mouse')) {
+    const data = activeTouches.get('mouse');
+    if (data && data.gain) {
+      data.gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 1.5);
+    }
+    activeTouches.delete('mouse');
+  }
+});
+
+// Play note - deep ambient
+function playNote(freq, brightness, ny, sustained = false) {
+  const t = audioCtx.currentTime;
+
+  // Shimmer - pitch slowly drifts
+  const lfo = audioCtx.createOscillator();
+  lfo.frequency.value = 0.3 + Math.random() * 0.3; // very slow
+  const lfoGain = audioCtx.createGain();
+  lfoGain.gain.value = freq * 0.008; // subtle pitch drift
+
+  // Main pad - multiple detuned layers
+  const oscs = [];
+  const detunes = [-8, -3, 0, 3, 8]; // cents
+  detunes.forEach(d => {
+    const o = audioCtx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = freq;
+    o.detune.value = d;
+    lfo.connect(lfoGain).connect(o.frequency);
+    oscs.push(o);
+  });
+
+  // High shimmer octave
+  const shimmer = audioCtx.createOscillator();
+  shimmer.type = 'sine';
+  shimmer.frequency.value = freq * 2;
+  shimmer.detune.value = 5;
+
+  // Sub bass
+  const sub = audioCtx.createOscillator();
+  sub.type = 'sine';
+  sub.frequency.value = freq * 0.5;
+
+  // Very soft filter
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 300 + brightness * 800;
+  filter.Q.value = 0.3;
+
+  // Filter envelope - slow open
+  filter.frequency.setValueAtTime(200, t);
+  filter.frequency.linearRampToValueAtTime(300 + brightness * 800, t + 1);
+  if (!sustained) {
+    filter.frequency.linearRampToValueAtTime(200, t + 5);
+  }
+
+  // Very slow attack, very long release (or infinite for sustained)
+  const mainGain = audioCtx.createGain();
+  mainGain.gain.setValueAtTime(0, t);
+  mainGain.gain.linearRampToValueAtTime(0.06, t + 0.5); // 500ms attack
+  
+  if (!sustained) {
+    mainGain.gain.linearRampToValueAtTime(0.05, t + 2);
+    mainGain.gain.exponentialRampToValueAtTime(0.001, t + 6); // 6s total
+  }
+
+  const shimmerGain = audioCtx.createGain();
+  shimmerGain.gain.setValueAtTime(0, t);
+  shimmerGain.gain.linearRampToValueAtTime(0.015, t + 0.8);
+  if (!sustained) {
+    shimmerGain.gain.exponentialRampToValueAtTime(0.001, t + 5);
+  }
+
+  const subGain = audioCtx.createGain();
+  subGain.gain.setValueAtTime(0, t);
+  subGain.gain.linearRampToValueAtTime(0.04, t + 0.6);
+  if (!sustained) {
+    subGain.gain.exponentialRampToValueAtTime(0.001, t + 4);
+  }
+
+  // Multi-tap delay (pseudo reverb)
+  const delays = [];
+  const delayTimes = [0.1, 0.23, 0.37, 0.53, 0.71, 0.97, 1.23];
+  const delayGains = [0.4, 0.35, 0.3, 0.25, 0.2, 0.15, 0.1];
+
+  delayTimes.forEach((dt, i) => {
+    const d = audioCtx.createDelay(2);
+    d.delayTime.value = dt;
+    const g = audioCtx.createGain();
+    g.gain.value = delayGains[i];
+    const f = audioCtx.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.value = 2000 - i * 200; // darker echoes
+    delays.push({ delay: d, gain: g, filter: f });
+  });
+
+  // Feedback network for infinite reverb feel
+  const fbDelay = audioCtx.createDelay(2);
+  fbDelay.delayTime.value = 0.6;
+  const fbGain = audioCtx.createGain();
+  fbGain.gain.value = 0.45;
+  const fbFilter = audioCtx.createBiquadFilter();
+  fbFilter.type = 'lowpass';
+  fbFilter.frequency.value = 1200;
+
+  // Second feedback tap
+  const fb2Delay = audioCtx.createDelay(2);
+  fb2Delay.delayTime.value = 0.85;
+  const fb2Gain = audioCtx.createGain();
+  fb2Gain.gain.value = 0.35;
+  const fb2Filter = audioCtx.createBiquadFilter();
+  fb2Filter.type = 'lowpass';
+  fb2Filter.frequency.value = 900;
+
+  // Connect oscillators
+  oscs.forEach(o => o.connect(filter));
+  filter.connect(mainGain);
+  shimmer.connect(shimmerGain);
+  sub.connect(subGain);
+
+  // Dry signal
+  mainGain.connect(audioCtx.destination);
+  shimmerGain.connect(audioCtx.destination);
+  subGain.connect(audioCtx.destination);
+
+  // Wet signals (delays)
+  delays.forEach(({ delay, gain, filter }) => {
+    mainGain.connect(delay);
+    delay.connect(filter);
+    filter.connect(gain);
+    gain.connect(audioCtx.destination);
+  });
+
+  // Feedback loops
+  mainGain.connect(fbDelay);
+  fbDelay.connect(fbFilter);
+  fbFilter.connect(fbGain);
+  fbGain.connect(fbDelay); // feedback
+  fbGain.connect(fb2Delay);
+  fb2Delay.connect(fb2Filter);
+  fb2Filter.connect(fb2Gain);
+  fb2Gain.connect(fb2Delay); // feedback
+  fbGain.connect(audioCtx.destination);
+  fb2Gain.connect(audioCtx.destination);
+
+  // Start
+  lfo.start(t);
+  oscs.forEach(o => o.start(t));
+  shimmer.start(t);
+  sub.start(t);
+
+  if (!sustained) {
+    // Stop
+    const stopTime = t + 7;
+    lfo.stop(stopTime);
+    oscs.forEach(o => o.stop(stopTime));
+    shimmer.stop(stopTime);
+    sub.stop(stopTime);
+  }
+  
+  // Return references for sustained notes
+  return {
+    osc: oscs[2], // middle oscillator for pitch bend
+    gain: mainGain,
+    allOscs: oscs,
+    lfo, shimmer, sub,
+    shimmerGain, subGain
+  };
+}
+
+// Particles
+function addParticle(x, y, color) {
+  // Soft floating particles - very slow
+  for (let i = 0; i < 4; i++) {
+    particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 0.8,
+      vy: (Math.random() - 0.5) * 0.8 - 0.3, // gentle drift upward
+      r: Math.random() * 30 + 20,
+      color,
+      alpha: 0.4,
+      decay: 0.002 + Math.random() * 0.002
+    });
+  }
+  // Very slow expanding ring
+  particles.push({
+    x, y,
+    vx: 0, vy: 0,
+    r: 3,
+    maxR: 200 + Math.random() * 150,
+    color,
+    alpha: 0.25,
+    decay: 0.0015,
+    isRing: true
+  });
+}
+
+// Animate
+function animate() {
+  if (!isPlaying) return;
+
+  ctx.fillStyle = 'rgba(10, 10, 10, 0.025)';
+  ctx.fillRect(0, 0, W/2, H/2);
+
+  const pos = getPos();
+
+  // Update ring progress
+  const circumference = 163.36;
+  ring.style.strokeDashoffset = circumference * (1 - pos);
+
+  // Play recorded notes
+  notes.forEach(n => {
+    const diff = pos - n.pos;
+    const tolerance = 0.008;
+    if (diff >= 0 && diff < tolerance && !n.played) {
+      playNote(n.freq, n.brightness, n.ny, false);
+      addParticle(n.x, n.y, n.color);
+      n.played = true;
+    }
+  });
+
+  // Reset at loop
+  if (pos < 0.03) {
+    notes.forEach(n => n.played = false);
+  }
+
+  // Draw note markers (very subtle)
+  ctx.globalAlpha = 0.15;
+  notes.forEach(n => {
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = n.color;
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+  particles.forEach((p, i) => {
+    if (p.isRing) {
+      p.r += 0.6; // very slow expansion
+      p.alpha -= p.decay;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.strokeStyle = p.color;
+      ctx.globalAlpha = Math.max(0, p.alpha);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    } else {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vx *= 0.995;
+      p.vy *= 0.995;
+      p.alpha -= p.decay;
+      p.r *= 0.998;
+
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, Math.max(0, p.r), 0, Math.PI * 2);
+      ctx.fillStyle = p.color;
+      ctx.globalAlpha = Math.max(0, p.alpha * 0.5);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  });
+
+  // Remove dead particles
+  particles = particles.filter(p => p.alpha > 0);
+
+  // Draw note markers (subtle)
+  notes.forEach(n => {
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = n.color;
+    ctx.globalAlpha = 0.3;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  });
+
+  requestAnimationFrame(animate);
+}
+
+document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+</script>
+</body>
+</html>
