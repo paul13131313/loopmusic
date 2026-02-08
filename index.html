@@ -142,6 +142,7 @@ let droneNodes = null;
 let droneActive = false;
 let isMuted = false;
 let activeNotes = []; // 現在鳴っている音
+let activeTouches = new Map();
 
 // Pentatonic scale frequencies
 const scale = [130.81, 146.83, 164.81, 196.00, 220.00, 261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33];
@@ -182,23 +183,33 @@ btnMute.addEventListener('click', () => {
   btnMute.classList.toggle('muted', isMuted);
   
   if (isMuted) {
-    // 全ての音を停止
+    // 全てのアクティブな音を停止
     activeNotes.forEach(note => {
       try {
-        if (note.gain) {
-          note.gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.3);
-        }
+        if (note.allOscs) note.allOscs.forEach(o => { try { o.stop(); } catch(e) {} });
+        if (note.lfo) note.lfo.stop();
+        if (note.shimmer) note.shimmer.stop();
+        if (note.sub) note.sub.stop();
       } catch(e) {}
     });
     activeNotes = [];
     
-    // ドローンも停止
-    stopDrone();
+    // ドローン停止
+    if (droneNodes) {
+      droneNodes.oscs.forEach(osc => { try { osc.stop(); } catch(e) {} });
+      try { droneNodes.lfo.stop(); } catch(e) {}
+      try { droneNodes.filterLfo.stop(); } catch(e) {}
+      droneNodes = null;
+    }
     
-    // パーティクルもクリア
+    // AudioContext停止で完全無音
+    audioCtx.suspend();
+    droneActive = false;
     particles = [];
+    activeTouches.clear();
   } else {
-    // ミュート解除 → ドローン再開
+    // 再開
+    audioCtx.resume();
     startDrone();
     droneActive = true;
   }
@@ -298,6 +309,7 @@ function handleInput(x, y, sustained = false) {
   if (isMuted) {
     isMuted = false;
     btnMute.classList.remove('muted');
+    audioCtx.resume();
     startDrone();
     droneActive = true;
   }
@@ -335,9 +347,6 @@ function handleInput(x, y, sustained = false) {
   
   return noteData;
 }
-
-// Active sustained notes (for touch hold)
-let activeTouches = new Map();
 
 canvas.addEventListener('touchstart', e => {
   e.preventDefault();
