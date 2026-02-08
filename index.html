@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Loop</title>
+<title>yoin</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -27,26 +27,6 @@
     height: 100%;
   }
 
-  /* Loop progress ring */
-  #ring {
-    position: fixed;
-    bottom: 20px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 60px;
-    height: 60px;
-    pointer-events: none;
-    opacity: 0.3;
-  }
-
-  #ring circle {
-    fill: none;
-    stroke-width: 3;
-  }
-
-  #ring .bg { stroke: #222; }
-  #ring .progress { stroke: #ff4444; stroke-linecap: round; transform: rotate(-90deg); transform-origin: center; }
-
   /* Minimal controls */
   #controls {
     position: fixed;
@@ -57,13 +37,13 @@
   }
 
   .btn {
-    width: 36px;
-    height: 36px;
+    width: 32px;
+    height: 32px;
     border-radius: 50%;
-    border: 1px solid #333;
-    background: rgba(10,10,10,0.6);
-    color: #444;
-    font-size: 14px;
+    border: 1px solid #222;
+    background: transparent;
+    color: #333;
+    font-size: 12px;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
     transition: all 0.3s;
@@ -71,8 +51,8 @@
 
   .btn:active { 
     transform: scale(0.9); 
-    border-color: #ff4444;
-    color: #ff4444;
+    border-color: #555;
+    color: #666;
   }
 
   /* Start overlay */
@@ -94,30 +74,31 @@
     font-family: system-ui;
     font-weight: 200;
     color: #fff;
-    font-size: 28px;
-    letter-spacing: 0.3em;
-    margin-bottom: 16px;
+    font-size: 32px;
+    letter-spacing: 0.4em;
+    margin-bottom: 4px;
   }
 
   #start p {
-    color: #555;
+    color: #444;
     font-family: system-ui;
-    font-size: 13px;
+    font-size: 11px;
     margin-bottom: 40px;
+    letter-spacing: 0.2em;
   }
 
   #start button {
-    width: 80px;
-    height: 80px;
+    width: 70px;
+    height: 70px;
     border-radius: 50%;
-    border: 2px solid #ff4444;
+    border: 1px solid #444;
     background: transparent;
-    color: #ff4444;
-    font-size: 28px;
+    color: #666;
+    font-size: 24px;
     cursor: pointer;
   }
 
-  #start button:active { background: #ff4444; color: #000; }
+  #start button:active { background: #333; color: #fff; }
 
   /* Hint */
   #hint {
@@ -137,43 +118,28 @@
 
 <canvas id="canvas"></canvas>
 
-<svg id="ring" viewBox="0 0 60 60">
-  <circle class="bg" cx="30" cy="30" r="26"/>
-  <circle class="progress" cx="30" cy="30" r="26" stroke-dasharray="163.36" stroke-dashoffset="163.36"/>
-</svg>
-
 <div id="controls">
   <button class="btn" id="btn-clear">×</button>
 </div>
 
 <div id="start">
-  <h1>LOOP</h1>
-  <p>画面をタップして演奏</p>
+  <h1>yoin</h1>
+  <p>余韻</p>
   <button id="start-btn">▶</button>
 </div>
 
-<div id="hint">どこでも触れて音を重ねる</div>
+<div id="hint">touch</div>
 
 <script>
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
-const ring = document.querySelector('#ring .progress');
 const hint = document.getElementById('hint');
 
 let W, H;
 let audioCtx;
-let isPlaying = false;
-let loopStart = 0;
-let notes = [];
 let particles = [];
-let lastBeat = -1;
-let droneOn = false;
 let droneNodes = null;
-
-const BPM = 50;
-const BARS = 4;
-const BEATS = 4;
-const loopDur = () => (60 / BPM) * BEATS * BARS;
+let activeNotes = []; // 現在鳴っている音
 
 // Pentatonic scale frequencies
 const scale = [130.81, 146.83, 164.81, 196.00, 220.00, 261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33];
@@ -193,8 +159,6 @@ window.addEventListener('resize', resize);
 
 function initAudio() {
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  isPlaying = true;
-  loopStart = audioCtx.currentTime;
   
   // ドローンを自動開始
   startDrone();
@@ -209,7 +173,18 @@ document.getElementById('start-btn').addEventListener('click', () => {
 });
 
 document.getElementById('btn-clear').addEventListener('click', () => {
-  notes = [];
+  // 全ての音を停止
+  activeNotes.forEach(note => {
+    try {
+      if (note.gain) {
+        note.gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.5);
+      }
+    } catch(e) {}
+  });
+  activeNotes = [];
+  
+  // パーティクルもクリア
+  particles = [];
 });
 
 // Drone - continuous ambient pad
@@ -296,12 +271,6 @@ function stopDrone() {
   }, 2500);
 }
 
-// Get loop position (0-1)
-function getPos() {
-  if (!audioCtx) return 0;
-  return ((audioCtx.currentTime - loopStart) % loopDur()) / loopDur();
-}
-
 // Touch/click handler
 function handleInput(x, y, sustained = false) {
   if (!audioCtx) return null;
@@ -322,21 +291,14 @@ function handleInput(x, y, sustained = false) {
 
   // Play sound
   const noteData = playNote(freq, brightness, ny, sustained);
+  
+  // Track active note for clear
+  if (noteData) {
+    activeNotes.push(noteData);
+  }
 
   // Add particle
   addParticle(x, y, color);
-
-  // Record (only non-sustained)
-  if (!sustained) {
-    notes.push({
-      pos: getPos(),
-      freq,
-      brightness,
-      ny,
-      x, y, color,
-      played: true
-    });
-  }
   
   return noteData;
 }
@@ -604,45 +566,13 @@ function addParticle(x, y, color) {
 
 // Animate
 function animate() {
-  if (!isPlaying) return;
-
   ctx.fillStyle = 'rgba(10, 10, 10, 0.025)';
   ctx.fillRect(0, 0, W/2, H/2);
 
-  const pos = getPos();
-
-  // Update ring progress
-  const circumference = 163.36;
-  ring.style.strokeDashoffset = circumference * (1 - pos);
-
-  // Play recorded notes
-  notes.forEach(n => {
-    const diff = pos - n.pos;
-    const tolerance = 0.008;
-    if (diff >= 0 && diff < tolerance && !n.played) {
-      playNote(n.freq, n.brightness, n.ny, false);
-      addParticle(n.x, n.y, n.color);
-      n.played = true;
-    }
-  });
-
-  // Reset at loop
-  if (pos < 0.03) {
-    notes.forEach(n => n.played = false);
-  }
-
-  // Draw note markers (very subtle)
-  ctx.globalAlpha = 0.15;
-  notes.forEach(n => {
-    ctx.beginPath();
-    ctx.arc(n.x, n.y, 3, 0, Math.PI * 2);
-    ctx.fillStyle = n.color;
-    ctx.fill();
-  });
-  ctx.globalAlpha = 1;
+  // Draw & update particles
   particles.forEach((p, i) => {
     if (p.isRing) {
-      p.r += 0.6; // very slow expansion
+      p.r += 0.6;
       p.alpha -= p.decay;
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
@@ -670,16 +600,6 @@ function animate() {
 
   // Remove dead particles
   particles = particles.filter(p => p.alpha > 0);
-
-  // Draw note markers (subtle)
-  notes.forEach(n => {
-    ctx.beginPath();
-    ctx.arc(n.x, n.y, 4, 0, Math.PI * 2);
-    ctx.fillStyle = n.color;
-    ctx.globalAlpha = 0.3;
-    ctx.fill();
-    ctx.globalAlpha = 1;
-  });
 
   requestAnimationFrame(animate);
 }
