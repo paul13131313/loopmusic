@@ -37,20 +37,20 @@
   }
 
   .btn {
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
+    padding: 8px 12px;
+    border-radius: 20px;
     border: 1px solid #222;
     background: transparent;
     color: #333;
-    font-size: 12px;
+    font-family: system-ui;
+    font-size: 10px;
+    letter-spacing: 0.1em;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
     transition: all 0.3s;
   }
 
-  .btn:active { 
-    transform: scale(0.9); 
+  .btn:active, .btn.muted { 
     border-color: #555;
     color: #666;
   }
@@ -119,7 +119,7 @@
 <canvas id="canvas"></canvas>
 
 <div id="controls">
-  <button class="btn" id="btn-clear">×</button>
+  <button class="btn" id="btn-mute">mute</button>
 </div>
 
 <div id="start">
@@ -139,6 +139,8 @@ let W, H;
 let audioCtx;
 let particles = [];
 let droneNodes = null;
+let droneActive = false;
+let isMuted = false;
 let activeNotes = []; // 現在鳴っている音
 
 // Pentatonic scale frequencies
@@ -162,6 +164,7 @@ function initAudio() {
   
   // ドローンを自動開始
   startDrone();
+  droneActive = true;
   
   animate();
   setTimeout(() => hint.style.opacity = '0', 3000);
@@ -172,19 +175,33 @@ document.getElementById('start-btn').addEventListener('click', () => {
   document.getElementById('start').classList.add('hidden');
 });
 
-document.getElementById('btn-clear').addEventListener('click', () => {
-  // 全ての音を停止
-  activeNotes.forEach(note => {
-    try {
-      if (note.gain) {
-        note.gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.5);
-      }
-    } catch(e) {}
-  });
-  activeNotes = [];
+const btnMute = document.getElementById('btn-mute');
+
+btnMute.addEventListener('click', () => {
+  isMuted = !isMuted;
+  btnMute.classList.toggle('muted', isMuted);
   
-  // パーティクルもクリア
-  particles = [];
+  if (isMuted) {
+    // 全ての音を停止
+    activeNotes.forEach(note => {
+      try {
+        if (note.gain) {
+          note.gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.3);
+        }
+      } catch(e) {}
+    });
+    activeNotes = [];
+    
+    // ドローンも停止
+    stopDrone();
+    
+    // パーティクルもクリア
+    particles = [];
+  } else {
+    // ミュート解除 → ドローン再開
+    startDrone();
+    droneActive = true;
+  }
 });
 
 // Drone - continuous ambient pad
@@ -257,8 +274,10 @@ function stopDrone() {
   if (!droneNodes) return;
   const t = audioCtx.currentTime;
   
-  // Fade out
-  droneNodes.masterGain.gain.linearRampToValueAtTime(0, t + 2);
+  // Quick fade out
+  droneNodes.masterGain.gain.linearRampToValueAtTime(0, t + 0.5);
+  
+  droneActive = false;
   
   // Stop after fade
   setTimeout(() => {
@@ -268,12 +287,26 @@ function stopDrone() {
       try { droneNodes.filterLfo.stop(); } catch(e) {}
       droneNodes = null;
     }
-  }, 2500);
+  }, 600);
 }
 
 // Touch/click handler
 function handleInput(x, y, sustained = false) {
   if (!audioCtx) return null;
+
+  // ミュート中はタッチで解除
+  if (isMuted) {
+    isMuted = false;
+    btnMute.classList.remove('muted');
+    startDrone();
+    droneActive = true;
+  }
+
+  // ドローンが止まってたら再開
+  if (!droneActive) {
+    startDrone();
+    droneActive = true;
+  }
 
   const nx = x / (W/2);
   const ny = y / (H/2);
